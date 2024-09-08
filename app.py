@@ -1,11 +1,13 @@
 import json
 import os
+from operator import itemgetter
 
 import streamlit as st
 from langchain.chat_models import ChatOpenAI
 from langchain.document_loaders import UnstructuredFileLoader
 from langchain.prompts import ChatPromptTemplate
 from langchain.retrievers import WikipediaRetriever
+from langchain.schema.runnable import RunnableLambda
 from langchain.text_splitter import CharacterTextSplitter
 
 folders = [
@@ -75,6 +77,11 @@ def load_llm(openai_api_key):
     )
 
 
+level_dict = {
+    "begginers": "Create 10 questions that test basic understanding of the text. Each question should have 4 answers, three of them must be incorrect, and one should be correct. These questions should focus on simple facts or concepts.",
+    "advanced": "Create 10 questions that test in-depth understanding of the text. Each question should have 4 answers, three of them must be incorrect, and one should be correct. These questions should require critical thinking or a deep grasp of the subject.",
+}
+
 prompt = ChatPromptTemplate.from_messages(
     [
         (
@@ -84,8 +91,8 @@ prompt = ChatPromptTemplate.from_messages(
 
     Based ONLY on the following context make 10 (TEN) questions to test the user's knowledge about the text.
     
-    Each question should have 4 answers, three of them must be incorrect and one should be correct.
-    
+    {level}
+        
     Context:{context}
     """,
         ),
@@ -127,9 +134,16 @@ def wiki_search(term):
 
 
 @st.cache_data(show_spinner="Making quiz...")
-def run_quiz_chain(_docs, topic):
-    chain = {"context": format_docs} | prompt | llm
-    response = chain.invoke(_docs)
+def run_quiz_chain(_docs, topic, level):
+    chain = (
+        {
+            "context": itemgetter("context") | RunnableLambda(format_docs),
+            "level": itemgetter("level"),
+        }
+        | prompt
+        | llm
+    )
+    response = chain.invoke({"context": _docs, "level": level})
     json_data = response.additional_kwargs["function_call"]["arguments"]
     return json.loads(json_data)
 
@@ -138,13 +152,14 @@ with st.sidebar:
     docs = None
     topic = None
 
+    st.write("github repo: https://github.com/miranaky/quiz_gpt_streamlit")
     openai_api_key = st.text_input("OpenAI API Key", type="password")
 
     choice = st.selectbox(
         "Choose what you want to use",
         (
-            "File",
             "Wikipedia",
+            "File",
         ),
     )
     if choice == "File":
@@ -158,7 +173,9 @@ with st.sidebar:
         topic = st.text_input("Search Wikipedia...")
         if topic:
             docs = wiki_search(topic)
-    st.write("github repo: https://github.com/miranaky/quiz_gpt_streamlit")
+    level = st.selectbox(
+        "Choose the level of the questions", ("begginers", "advanced"), index=0
+    )
 
 
 if openai_api_key is None or not docs:
@@ -175,7 +192,11 @@ if openai_api_key is None or not docs:
     )
 else:
     llm = load_llm(openai_api_key)
-    response = run_quiz_chain(docs, topic if topic else file.name)
+    response = run_quiz_chain(
+        docs,
+        topic=topic if topic else file.name,
+        level=level_dict[level],
+    )
     correct = 0
     with st.form("questions_form"):
         for idx, question in enumerate(response["questions"], start=1):
